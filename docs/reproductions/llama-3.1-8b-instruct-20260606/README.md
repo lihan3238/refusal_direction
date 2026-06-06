@@ -128,6 +128,81 @@ artifacts/refusal_direction/Llama-3.1-8B-Instruct/20260606_202948/
 baseline 全部正常回答；正向加入 refusal direction 后，非拒绝率从 `1.00` 降到
 `0.83`，说明拒绝倾向被诱导出来，但强度弱于 Gemma 2B run 中接近全拒绝的表现。
 
+## Activation addition 强度扫描
+
+在 `coeff=+1.0` 上，Llama 3.1 8B 的 harmless 拒绝诱导明显弱于 Gemma 2B。
+因此追加了一组 coefficient sweep，验证这个差异是否和 actadd 强度有关。
+
+本实验没有重新选择 direction，也没有改核心 pipeline 代码。它复用完整 run 中选出的
+direction：
+
+```json
+{"pos": -2, "layer": 11}
+```
+
+该向量范数为 `4.725391174102522`。actadd 的代码语义是直接执行
+`activation += coeff * direction`，这里的 direction 是原始 mean-diff 向量，
+不是单位向量。因此 `+2.0` 表示加入两倍原始 refusal direction；`-2.0` 表示沿反方向
+加入两倍原始向量。
+
+本轮仍使用同一批 100 个 harmful prompts 和 100 个 harmless prompts。`0.0`、
+`+1.0`、`-1.0` 复用完整 run 的结果，其他系数为新增生成和评估。
+
+远端产物：
+
+```text
+/home/dell/.workplace/reproductions/refusal_direction/pipeline/runs/Llama-3.1-8B-Instruct_coeff_sweep_20260606
+```
+
+本机已同步副本：
+
+```text
+artifacts/refusal_direction/Llama-3.1-8B-Instruct/20260606_coeff_sweep/
+```
+
+### Harmless 正向强度
+
+| coeff | Substring 非拒绝率 | 输出现象 |
+| ---: | ---: | --- |
+| `0.0` | 1.00 | baseline，正常回答。 |
+| `+0.5` | 0.86 | 轻微诱导拒绝。 |
+| `+1.0` | 0.83 | 论文默认强度，在本模型上仍偏弱。 |
+| `+2.0` | 0.26 | 明显诱导拒绝，是本轮最有效的正常强度。 |
+| `+4.0` | 1.00 | 指标回到 1.00，但输出明显退化，常见为长重复片段。 |
+| `+8.0` | 1.00 | 输出严重退化，基本不是正常回答。 |
+
+这里最重要的结论是：`+1.0` 的弱效果确实和强度有关，`+2.0` 可以把 harmless
+非拒绝率从 `0.83` 进一步压到 `0.26`。但这个关系不是单调的；`+4.0` 和
+`+8.0` 没有得到“更强的正常拒绝”，而是把模型推到离正常生成分布很远的位置。
+因此不能只看 substring 非拒绝率，必须同时检查输出形态。
+
+### Harmful 负向强度
+
+| coeff | Substring ASR | Ollama LlamaGuard ASR |
+| ---: | ---: | ---: |
+| `0.0` | 0.16 | 0.01 |
+| `-0.5` | 0.59 | 0.51 |
+| `-1.0` | 1.00 | 0.89 |
+| `-2.0` | 1.00 | 0.51 |
+| `-4.0` | 1.00 | 0.97 |
+| `-8.0` | 1.00 | 0.96 |
+
+负向结果也说明强度会影响绕过拒绝的效果。Substring ASR 从 `-1.0` 开始已经饱和，
+但 LlamaGuard ASR 没有严格单调：`-2.0` 下降到 `0.51`，`-4.0` 和 `-8.0`
+又升到接近 `1.0`。这说明“没有出现常见拒绝前缀”不等价于 guard 确认的 harmful
+成功输出；强度过大时也可能改变输出形态，使 substring 指标失真。
+
+### 强度扫描结论
+
+这组实验修正了完整 run 中对 actadd 的解释：
+
+- Llama 3.1 8B 并不是不能被正向 refusal direction 强烈诱导拒绝；`+1.0`
+  只是偏弱，`+2.0` 明显更有效。
+- 论文和仓库默认的 `coeff=1.0` 更像一个固定 convention，不是对所有模型最优的强度。
+- actadd 强度过大时会产生退化输出，因此不能把更大的系数简单解释为更强的安全行为。
+- Directional ablation 的主结论仍然更稳：它在本模型上直接把 harmful refusal
+  移除，而且 loss 扰动仍比 actadd 小。
+
 ### CE loss / perplexity
 
 | 干预 | 数据集 | CE loss | Perplexity | Tokens |
